@@ -1,5 +1,6 @@
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -8,6 +9,50 @@
 #define MAX_SIZE 1024
 #define BACKLOG 10
 
+
+typedef struct  {
+  char *buff;
+  ssize_t len;
+  ssize_t position;
+} Cursor;
+
+Cursor *init_cursor() {
+  Cursor *c = malloc(sizeof(Cursor));
+  if(!c) {
+    perror("allocate memory");
+    exit(1);
+  }
+  c->buff = NULL;
+  c->len = 0;
+  c->position = 0;
+  return c;
+}
+
+void free_cursor(Cursor *cursor) {
+  free(cursor->buff);
+  free(cursor);
+}
+
+void parser(Cursor *cursor) {
+  switch (cursor->buff[cursor->position++]) {
+    case '*':
+      printf("Array\n");
+      return;
+    case '+':
+      printf("String\n");
+
+      return;
+    case ':':
+      printf("Integer\n");
+      return;
+    case '$': 
+      printf("Bulk string\n");
+      return;
+    default:
+      printf("I Don't know\n");
+  }
+}
+
 void handle_connection(int fd) {
   char buff[MAX_SIZE];
   ssize_t n = 0;
@@ -15,6 +60,19 @@ void handle_connection(int fd) {
     if(n == 0) {
       return;
     }
+
+    Cursor *cursor = init_cursor();
+    char *str = malloc(n*sizeof(char));
+    if(!str) {
+      exit(1);
+    }
+    memcpy(str, buff, n);
+    cursor->buff = str;
+    cursor->len = n;
+    parser(cursor);
+    free_cursor(cursor);
+
+   
     const char *response = "+PONG\r\n";
     send(fd, response, strlen(response), 0);
   }
