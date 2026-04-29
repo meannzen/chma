@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -15,9 +16,10 @@ void handle_connection(int fd) {
 		perror("Failed to read socket");
 		return;
 	}
-	printf("buff %s\n", buff);
-	
+	const char *response = "+PONG\r\n";
+	send(fd, response, strlen(response), 0);	
 }
+
 
 int main() {
 	struct sockaddr_in server_addr, client_addr;
@@ -31,7 +33,7 @@ int main() {
 		return 1;
 	}
 	// trying to resuse connection
-	if(setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,&opt , sizeof(opt)) < 0) {
+	if(setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR ,&opt , sizeof(opt)) < 0) {
 		perror("setsocketopt");
 		return 1;
 	}
