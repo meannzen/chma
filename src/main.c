@@ -1,4 +1,5 @@
 #include <netinet/in.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,16 +29,27 @@ Cursor *init_cursor() {
   return c;
 }
 
-void free_cursor(Cursor *cursor) {
-  free(cursor->buff);
-  free(cursor);
+int get_decimal(Cursor*cursor) {
+  char value[5] = {};
+  int i = 0;
+  while (cursor->buff[cursor->position] !='\r' && cursor->buff[cursor->position + 1]!= '\n' ) {
+    if(i < 5) {
+      value[i] = cursor->buff[cursor->position++]; 
+    }
+    i++;
+  }
+
+  return atoi(value);
 }
 
 void parser(Cursor *cursor) {
-  switch (cursor->buff[cursor->position++]) {
-    case '*':
-      printf("Array\n");
+  switch (cursor->buff[cursor->position]) {
+    case '*':{    
+      cursor->position++;
+      int size = get_decimal(cursor);
+      printf("array size %d\n", size);
       return;
+    }
     case '+':
       printf("String\n");
 
@@ -50,18 +62,19 @@ void parser(Cursor *cursor) {
       return;
     default:
       printf("I Don't know\n");
+      return;
   }
 }
 
 void handle_connection(int fd) {
   char buff[MAX_SIZE];
   ssize_t n = 0;
+  Cursor *cursor = init_cursor();
   while((n = recv(fd, buff, MAX_SIZE - 1, 0)) !=-1){
     if(n == 0) {
       return;
     }
 
-    Cursor *cursor = init_cursor();
     char *str = malloc(n*sizeof(char));
     if(!str) {
       exit(1);
@@ -70,16 +83,18 @@ void handle_connection(int fd) {
     cursor->buff = str;
     cursor->len = n;
     parser(cursor);
-    free_cursor(cursor);
-
-   
+    free(cursor->buff);
     const char *response = "+PONG\r\n";
     send(fd, response, strlen(response), 0);
   }
+
+  free(cursor);
   
 }
 
 int main() {
+  setbuf(stdout, NULL);
+	setbuf(stderr, NULL);
   struct sockaddr_in server_addr, client_addr;
   socklen_t addrlen = sizeof(server_addr);
   int opt = 1;
