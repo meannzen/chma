@@ -3,8 +3,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 
 #define PORT 6379
 #define MAX_SIZE 1024
@@ -66,12 +68,17 @@ void parser(Cursor *cursor) {
   }
 }
 
-void handle_connection(int fd) {
+void handle_connection(int fd, struct sockaddr_in *client_addr) {
   char buff[MAX_SIZE];
   ssize_t n = 0;
   Cursor *cursor = init_cursor();
-  while((n = recv(fd, buff, MAX_SIZE - 1, 0)) !=-1){
+  while((n = recv(fd, buff, MAX_SIZE - 1, 0)) > 0){
     if(n == 0) {
+      char ipstr[INET_ADDRSTRLEN];
+      int port = ntohs(client_addr->sin_port);
+      inet_ntop(AF_INET, &client_addr->sin_addr, ipstr, sizeof(ipstr));
+      printf("Client %s:%d Disconnection...\n", ipstr, port);
+      exit(1);
       return;
     }
 
@@ -100,7 +107,13 @@ int main() {
   int opt = 1;
   int server_fd, new_socket;
 
+  struct pollfd polls_fds[1];
+
   server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+  polls_fds[0].fd = server_fd;
+  polls_fds[0].events = POLLIN;
+
   if (server_fd == -1) {
     perror("socket failed");
     return 1;
@@ -120,19 +133,29 @@ int main() {
     return 1;
   }
 
-  while (1) {
-    if (listen(server_fd, BACKLOG) != 0) {
+  if (listen(server_fd, BACKLOG) < 0) {
       perror("Listen failed");
       return 1;
+  }
+
+
+  while (1) {
+    int poll_count = poll(polls_fds, 1, -1);
+    if(poll_count == -1) {
+      perror("poll failed");
+      exit(1);
     }
 
+    if(polls_fds[0].revents & (POLLIN | POLLHUP)) {
+      printf("ready to read data\n");
+    }
     if ((new_socket = accept(server_fd, (struct sockaddr *)&client_addr,
                              &addrlen)) < 0) {
       perror("Accept failed");
       return 1;
     }
 
-    handle_connection(new_socket);
+    handle_connection(new_socket, &client_addr);
     close(new_socket);
   }
 
