@@ -1,165 +1,144 @@
 #include <netinet/in.h>
-#include <stdint.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <arpa/inet.h>
 
 #define PORT 6379
 #define MAX_SIZE 1024
 #define BACKLOG 10
 
+static const char PONG[] = "+PONG\r\n";
 
-typedef struct  {
-  char *buff;
-  ssize_t len;
-  ssize_t position;
-} Cursor;
-
-Cursor *init_cursor() {
-  Cursor *c = malloc(sizeof(Cursor));
-  if(!c) {
-    perror("allocate memory");
-    exit(1);
-  }
-  c->buff = NULL;
-  c->len = 0;
-  c->position = 0;
-  return c;
+static void del_from_pfds(struct pollfd pfds[], int i, int *fd_count)
+{
+	pfds[i] = pfds[*fd_count - 1];
+	(*fd_count)--;
 }
 
-int get_decimal(Cursor*cursor) {
-  char value[5] = {};
-  int i = 0;
-  while (cursor->buff[cursor->position] !='\r' && cursor->buff[cursor->position + 1]!= '\n' ) {
-    if(i < 5) {
-      value[i] = cursor->buff[cursor->position++]; 
-    }
-    i++;
-  }
+static void add_to_pfds(struct pollfd **pfds, int newfd, int *fd_count,
+			int *fd_size)
+{
+	if (*fd_count == *fd_size) {
+		int new_size = *fd_size * 2;
+		struct pollfd *tmp = realloc(*pfds, sizeof(**pfds) * new_size);
+		if (!tmp) {
+			perror("realloc");
+			close(newfd);
+			return;
+		}
+		*pfds = tmp;
+		*fd_size = new_size;
+	}
 
-  return atoi(value);
+	(*pfds)[*fd_count].fd = newfd;
+	(*pfds)[*fd_count].events = POLLIN;
+	(*pfds)[*fd_count].revents = 0;
+	(*fd_count)++;
 }
 
-void parser(Cursor *cursor) {
-  switch (cursor->buff[cursor->position]) {
-    case '*':{    
-      cursor->position++;
-      int size = get_decimal(cursor);
-      printf("array size %d\n", size);
-      return;
-    }
-    case '+':
-      printf("String\n");
-
-      return;
-    case ':':
-      printf("Integer\n");
-      return;
-    case '$': 
-      printf("Bulk string\n");
-      return;
-    default:
-      printf("I Don't know\n");
-      return;
-  }
+static void handle_new_connection(int listener, int *fd_size, int *fd_count,
+				  struct pollfd **pfds)
+{
+	int new_fd = accept(listener, NULL, NULL);
+	if (new_fd == -1) {
+		perror("accept");
+		return;
+	}
+	add_to_pfds(pfds, new_fd, fd_count, fd_size);
 }
 
-void handle_connection(int fd, struct sockaddr_in *client_addr) {
-  char buff[MAX_SIZE];
-  ssize_t n = 0;
-  Cursor *cursor = init_cursor();
-  while((n = recv(fd, buff, MAX_SIZE - 1, 0)) > 0){
-    if(n == 0) {
-      char ipstr[INET_ADDRSTRLEN];
-      int port = ntohs(client_addr->sin_port);
-      inet_ntop(AF_INET, &client_addr->sin_addr, ipstr, sizeof(ipstr));
-      printf("Client %s:%d Disconnection...\n", ipstr, port);
-      exit(1);
-      return;
-    }
+static void handle_client(struct pollfd *pfds, int *i, int *fd_count)
+{
+	char buff[MAX_SIZE];
+	int fd = pfds[*i].fd;
+	ssize_t n = recv(fd, buff, sizeof(buff) - 1, 0);
 
-    char *str = malloc(n*sizeof(char));
-    if(!str) {
-      exit(1);
-    }
-    memcpy(str, buff, n);
-    cursor->buff = str;
-    cursor->len = n;
-    parser(cursor);
-    free(cursor->buff);
-    const char *response = "+PONG\r\n";
-    send(fd, response, strlen(response), 0);
-  }
+	if (n <= 0) {
+		close(fd);
+		del_from_pfds(pfds, *i, fd_count);
+		(*i)--;
+		return;
+	}
+	buff[n] = '\0';
 
-  free(cursor);
-  
+	for (char *p = buff; (p = strstr(p, "PING")) != NULL; p += 4) {
+		if (send(fd, PONG, sizeof(PONG) - 1, 0) == -1) {
+			perror("send");
+			break;
+		}
+	}
 }
 
-int main() {
-  setbuf(stdout, NULL);
+int main(void)
+{
+	setbuf(stdout, NULL);
 	setbuf(stderr, NULL);
-  struct sockaddr_in server_addr, client_addr;
-  socklen_t addrlen = sizeof(server_addr);
-  int opt = 1;
-  int server_fd, new_socket;
 
-  struct pollfd polls_fds[1];
+	int opt = 1;
+	int fd_size = 5;
+	int fd_count = 0;
 
-  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+	int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (server_fd == -1) {
+		perror("socket failed");
+		return 1;
+	}
 
-  polls_fds[0].fd = server_fd;
-  polls_fds[0].events = POLLIN;
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) <
+	    0) {
+		perror("setsockopt");
+		return 1;
+	}
 
-  if (server_fd == -1) {
-    perror("socket failed");
-    return 1;
-  }
-  // trying to resuse connection
-  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-    perror("setsocketopt");
-    return 1;
-  }
+	struct sockaddr_in server_addr = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = INADDR_ANY,
+		.sin_port = htons(PORT),
+	};
 
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_addr.s_addr = INADDR_ANY;
-  server_addr.sin_port = htons(PORT);
+	if (bind(server_fd, (struct sockaddr *)&server_addr,
+		 sizeof(server_addr)) < 0) {
+		perror("bind failed");
+		return 1;
+	}
 
-  if (bind(server_fd, (struct sockaddr *)&server_addr, addrlen) < 0) {
-    perror("bind failed");
-    return 1;
-  }
+	if (listen(server_fd, BACKLOG) < 0) {
+		perror("listen failed");
+		return 1;
+	}
 
-  if (listen(server_fd, BACKLOG) < 0) {
-      perror("Listen failed");
-      return 1;
-  }
+	struct pollfd *pfds = malloc(sizeof(*pfds) * fd_size);
+	if (!pfds) {
+		perror("malloc");
+		return 1;
+	}
+	pfds[0].fd = server_fd;
+	pfds[0].events = POLLIN;
+	pfds[0].revents = 0;
+	fd_count = 1;
 
+	while (1) {
+		if (poll(pfds, fd_count, -1) == -1) {
+			perror("poll failed");
+			exit(1);
+		}
 
-  while (1) {
-    int poll_count = poll(polls_fds, 1, -1);
-    if(poll_count == -1) {
-      perror("poll failed");
-      exit(1);
-    }
+		for (int i = 0; i < fd_count; i++) {
+			if (!(pfds[i].revents & (POLLIN | POLLHUP | POLLERR)))
+				continue;
 
-    if(polls_fds[0].revents & (POLLIN | POLLHUP)) {
-      printf("ready to read data\n");
-    }
-    if ((new_socket = accept(server_fd, (struct sockaddr *)&client_addr,
-                             &addrlen)) < 0) {
-      perror("Accept failed");
-      return 1;
-    }
+			if (pfds[i].fd == server_fd)
+				handle_new_connection(server_fd, &fd_size,
+						      &fd_count, &pfds);
+			else
+				handle_client(pfds, &i, &fd_count);
+		}
+	}
 
-    handle_connection(new_socket, &client_addr);
-    close(new_socket);
-  }
-
-  close(server_fd);
-
-  return 0;
+	free(pfds);
+	close(server_fd);
+	return 0;
 }
