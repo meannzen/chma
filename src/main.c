@@ -12,6 +12,7 @@
 #include "command.h"
 #include "parser.h"
 #include "reply.h"
+#include "store.h"
 
 #define PORT 6379
 #define BACKLOG 10
@@ -33,7 +34,8 @@ static void drop_client(struct pollfd *pfds, struct client **clients, int *i,
 }
 
 static void add_client(struct pollfd **pfds, struct client ***clients,
-		       int newfd, int *fd_count, int *fd_size)
+		       int newfd, int *fd_count, int *fd_size,
+		       struct store *store)
 {
 	if (*fd_count == *fd_size) {
 		int new_size = *fd_size * 2;
@@ -56,7 +58,7 @@ static void add_client(struct pollfd **pfds, struct client ***clients,
 	struct client *c = malloc(sizeof(*c));
 	if (!c)
 		goto fail;
-	client_init(c, newfd);
+	client_init(c, newfd, store);
 
 	(*pfds)[*fd_count].fd = newfd;
 	(*pfds)[*fd_count].events = POLLIN;
@@ -72,14 +74,14 @@ fail:
 
 static void handle_new_connection(int listener, struct pollfd **pfds,
 				  struct client ***clients, int *fd_count,
-				  int *fd_size)
+				  int *fd_size, struct store *store)
 {
 	int new_fd = accept(listener, NULL, NULL);
 	if (new_fd == -1) {
 		perror("accept");
 		return;
 	}
-	add_client(pfds, clients, new_fd, fd_count, fd_size);
+	add_client(pfds, clients, new_fd, fd_count, fd_size, store);
 }
 
 static void handle_client(struct pollfd *pfds, struct client **clients, int *i,
@@ -160,7 +162,8 @@ int main(void)
 
 	struct pollfd *pfds = malloc(sizeof(*pfds) * fd_size);
 	struct client **clients = calloc(fd_size, sizeof(*clients));
-	if (!pfds || !clients) {
+	struct store *store = store_create();
+	if (!pfds || !clients || !store) {
 		perror("malloc");
 		return 1;
 	}
@@ -181,12 +184,13 @@ int main(void)
 
 			if (pfds[i].fd == server_fd)
 				handle_new_connection(server_fd, &pfds, &clients,
-						      &fd_count, &fd_size);
+						      &fd_count, &fd_size, store);
 			else
 				handle_client(pfds, clients, &i, &fd_count);
 		}
 	}
 
+	store_destroy(store);
 	free(pfds);
 	free(clients);
 	close(server_fd);

@@ -6,9 +6,10 @@
 
 #include "client.h"
 
-void client_init(struct client *c, int fd)
+void client_init(struct client *c, int fd, struct store *store)
 {
 	c->fd = fd;
+	c->store = store;
 	c->in_len = 0;
 	c->out_len = 0;
 }

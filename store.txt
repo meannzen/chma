@@ -1,0 +1,13 @@
+struct store *s                  (heap block 1: one struct)
+┌─────────────────────────┐
+│ buckets  ───────────────┼──────┐
+│ nbuckets = 16           │      │
+│ count    = 0            │      │
+└─────────────────────────┘      │
+                                 ▼
+struct entry **buckets           (heap block 2: 16 pointers)
+┌─────┬─────┬─────┬─────┬─────┬─────┬── ─ ─ ──┬──────┐
+│NULL │NULL │NULL │NULL │NULL │NULL │   ...   │ NULL │
+└─────┴─────┴─────┴─────┴─────┴─────┴── ─ ─ ──┴──────┘
+  [0]   [1]   [2]   [3]   [4]   [5]            [15]
+  └─ each slot is 8 bytes (one `struct entry *`)
