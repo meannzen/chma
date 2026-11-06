@@ -39,13 +39,14 @@ int event_del(struct event_loop *l, int fd)
 	return epoll_ctl(l->fd, EPOLL_CTL_DEL, fd, NULL);
 }
 
-int event_wait(struct event_loop *l, struct event *out, int max)
+int event_wait(struct event_loop *l, struct event *out, int max,
+	       int timeout_ms)
 {
 	struct epoll_event evs[max];
 	int n;
 
 	do {
-		n = epoll_wait(l->fd, evs, max, -1);
+		n = epoll_wait(l->fd, evs, max, timeout_ms);
 	} while (n == -1 && errno == EINTR);
 	if (n == -1)
 		return -1;
@@ -97,13 +98,18 @@ int event_del(struct event_loop *l, int fd)
 	return kevent(l->fd, &ch, 1, NULL, 0, NULL);
 }
 
-int event_wait(struct event_loop *l, struct event *out, int max)
+int event_wait(struct event_loop *l, struct event *out, int max,
+	       int timeout_ms)
 {
 	struct kevent evs[max];
+	struct timespec ts = {
+		.tv_sec = timeout_ms / 1000,
+		.tv_nsec = (long)(timeout_ms % 1000) * 1000000L,
+	};
 	int n;
 
 	do {
-		n = kevent(l->fd, NULL, 0, evs, max, NULL);
+		n = kevent(l->fd, NULL, 0, evs, max, timeout_ms < 0 ? NULL : &ts);
 	} while (n == -1 && errno == EINTR);
 	if (n == -1)
 		return -1;
