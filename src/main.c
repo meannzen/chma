@@ -1,5 +1,4 @@
 #include <netinet/in.h>
-#include <poll.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -10,6 +9,7 @@
 
 #include "client.h"
 #include "command.h"
+#include "event.h"
 #include "parser.h"
 #include "reply.h"
 #include "store.h"
@@ -17,54 +17,34 @@
 #define PORT 6379
 #define BACKLOG 10
 
-static void drop_client(struct pollfd *pfds, struct client **clients, int *i,
-			int *fd_count)
+static const char *const DOG_BANNER =
+	"\n"
+	"      __      _\n"
+	"    o'')}____//\n"
+	"     `_/      )\n"
+	"     (_(_/-(_/\n"
+	"\n"
+	"  woof! redis is listening on port %d\n"
+	"\n";
+
+static void drop_client(struct event_loop *loop, struct client *c)
 {
-	int last = *fd_count - 1;
-
-	close(pfds[*i].fd);
-	free(clients[*i]);
-
-	pfds[*i] = pfds[last];
-	clients[*i] = clients[last];
-	clients[last] = NULL;
-
-	(*fd_count)--;
-	(*i)--;
+	event_del(loop, c->fd);
+	close(c->fd);
+	free(c);
 }
 
-static void add_client(struct pollfd **pfds, struct client ***clients,
-		       int newfd, int *fd_count, int *fd_size,
-		       struct store *store)
+static void add_client(struct event_loop *loop, int newfd, struct store *store)
 {
-	if (*fd_count == *fd_size) {
-		int new_size = *fd_size * 2;
-
-		struct pollfd *p = realloc(*pfds, sizeof(**pfds) * new_size);
-		if (!p)
-			goto fail;
-		*pfds = p;
-
-		struct client **cl = realloc(*clients, sizeof(**clients) * new_size);
-		if (!cl)
-			goto fail;
-		*clients = cl;
-
-		for (int k = *fd_size; k < new_size; k++)
-			cl[k] = NULL;
-		*fd_size = new_size;
-	}
-
 	struct client *c = malloc(sizeof(*c));
 	if (!c)
 		goto fail;
 	client_init(c, newfd, store);
 
-	(*pfds)[*fd_count].fd = newfd;
-	(*pfds)[*fd_count].events = POLLIN;
-	(*pfds)[*fd_count].revents = 0;
-	(*clients)[*fd_count] = c;
-	(*fd_count)++;
+	if (event_add(loop, newfd, c) == -1) {
+		free(c);
+		goto fail;
+	}
 	return;
 
 fail:
@@ -72,31 +52,27 @@ fail:
 	close(newfd);
 }
 
-static void handle_new_connection(int listener, struct pollfd **pfds,
-				  struct client ***clients, int *fd_count,
-				  int *fd_size, struct store *store)
+static void handle_new_connection(struct event_loop *loop, int listener,
+				  struct store *store)
 {
 	int new_fd = accept(listener, NULL, NULL);
 	if (new_fd == -1) {
 		perror("accept");
 		return;
 	}
-	add_client(pfds, clients, new_fd, fd_count, fd_size, store);
+	add_client(loop, new_fd, store);
 }
 
-static void handle_client(struct pollfd *pfds, struct client **clients, int *i,
-			  int *fd_count)
+static void handle_client(struct event_loop *loop, struct client *c)
 {
-	struct client *c = clients[*i];
-
 	if (c->in_len == sizeof(c->in)) {
-		drop_client(pfds, clients, i, fd_count);
+		drop_client(loop, c);
 		return;
 	}
 
 	ssize_t n = recv(c->fd, c->in + c->in_len, sizeof(c->in) - c->in_len, 0);
 	if (n <= 0) {
-		drop_client(pfds, clients, i, fd_count);
+		drop_client(loop, c);
 		return;
 	}
 	c->in_len += (size_t)n;
@@ -112,12 +88,12 @@ static void handle_client(struct pollfd *pfds, struct client **clients, int *i,
 	if (st == PARSE_ERROR) {
 		reply_error(c, "ERR Protocol error");
 		client_flush(c);
-		drop_client(pfds, clients, i, fd_count);
+		drop_client(loop, c);
 		return;
 	}
 
 	if (client_flush(c) < 0)
-		drop_client(pfds, clients, i, fd_count);
+		drop_client(loop, c);
 }
 
 int main(void)
@@ -128,8 +104,6 @@ int main(void)
 	signal(SIGPIPE, SIG_IGN);
 
 	int opt = 1;
-	int fd_size = 5;
-	int fd_count = 0;
 
 	int server_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (server_fd == -1) {
@@ -160,39 +134,40 @@ int main(void)
 		return 1;
 	}
 
-	struct pollfd *pfds = malloc(sizeof(*pfds) * fd_size);
-	struct client **clients = calloc(fd_size, sizeof(*clients));
+	printf(DOG_BANNER, PORT);
+
+	struct event_loop *loop = event_loop_create();
 	struct store *store = store_create();
-	if (!pfds || !clients || !store) {
-		perror("malloc");
+	if (!loop || !store) {
+		perror("init");
 		return 1;
 	}
-	pfds[0].fd = server_fd;
-	pfds[0].events = POLLIN;
-	pfds[0].revents = 0;
-	fd_count = 1;
+	if (event_add(loop, server_fd, NULL) == -1) {
+		perror("event_add");
+		return 1;
+	}
 
+	struct event evs[64];
 	while (1) {
-		if (poll(pfds, fd_count, -1) == -1) {
-			perror("poll failed");
+		int n = event_wait(loop, evs, 64);
+		if (n == -1) {
+			perror("event_wait failed");
 			exit(1);
 		}
 
-		for (int i = 0; i < fd_count; i++) {
-			if (!(pfds[i].revents & (POLLIN | POLLHUP | POLLERR)))
+		for (int i = 0; i < n; i++) {
+			if (!evs[i].readable && !evs[i].hangup)
 				continue;
 
-			if (pfds[i].fd == server_fd)
-				handle_new_connection(server_fd, &pfds, &clients,
-						      &fd_count, &fd_size, store);
+			if (!evs[i].data)
+				handle_new_connection(loop, server_fd, store);
 			else
-				handle_client(pfds, clients, &i, &fd_count);
+				handle_client(loop, evs[i].data);
 		}
 	}
 
 	store_destroy(store);
-	free(pfds);
-	free(clients);
+	event_loop_destroy(loop);
 	close(server_fd);
 	return 0;
 }
