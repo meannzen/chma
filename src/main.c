@@ -17,15 +17,34 @@
 #define PORT 6379
 #define BACKLOG 10
 
-static const char *const DOG_BANNER =
-	"\n"
-	"      __      _\n"
-	"    o'')}____//\n"
-	"     `_/      )\n"
-	"     (_(_/-(_/\n"
-	"\n"
-	"  woof! redis is listening on port %d\n"
-	"\n";
+#define EAR_TICK_MS 400
+#define EAR_LINES_BELOW 6
+
+static const char *const EAR_FRAMES[] = {
+	"/\\_/\\",
+	"|\\_/\\",
+	"/\\_/\\",
+	"/\\_/|",
+};
+#define EAR_FRAME_COUNT (sizeof(EAR_FRAMES) / sizeof(EAR_FRAMES[0]))
+
+static void banner_print(const char *ears)
+{
+	printf("\n"
+	       "      %s\n"
+	       "     ( o.o )\n"
+	       "      > ^ <\n"
+	       "\n"
+	       "  meow! redis is listening on port %d\n"
+	       "\n",
+	       ears, PORT);
+}
+
+static void banner_redraw_ears(const char *ears)
+{
+	printf("\033[%dA\r\033[2K      %s\033[%dB\r", EAR_LINES_BELOW, ears,
+	       EAR_LINES_BELOW);
+}
 
 static void drop_client(struct event_loop *loop, struct client *c)
 {
@@ -134,7 +153,9 @@ int main(void)
 		return 1;
 	}
 
-	printf(DOG_BANNER, PORT);
+	int animating = isatty(STDOUT_FILENO);
+	size_t frame = 0;
+	banner_print(EAR_FRAMES[0]);
 
 	struct event_loop *loop = event_loop_create();
 	struct store *store = store_create();
@@ -149,10 +170,16 @@ int main(void)
 
 	struct event evs[64];
 	while (1) {
-		int n = event_wait(loop, evs, 64);
+		int n = event_wait(loop, evs, 64, animating ? EAR_TICK_MS : -1);
 		if (n == -1) {
 			perror("event_wait failed");
 			exit(1);
+		}
+
+		if (n == 0 && animating) {
+			frame = (frame + 1) % EAR_FRAME_COUNT;
+			banner_redraw_ears(EAR_FRAMES[frame]);
+			continue;
 		}
 
 		for (int i = 0; i < n; i++) {
