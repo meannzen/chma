@@ -1,81 +1,129 @@
 #include <netinet/in.h>
 #include <poll.h>
+#include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "client.h"
+#include "command.h"
+#include "parser.h"
+#include "reply.h"
+
 #define PORT 6379
-#define MAX_SIZE 1024
 #define BACKLOG 10
 
-static const char PONG[] = "+PONG\r\n";
-
-static void del_from_pfds(struct pollfd pfds[], int i, int *fd_count)
+static void drop_client(struct pollfd *pfds, struct client **clients, int *i,
+			int *fd_count)
 {
-	pfds[i] = pfds[*fd_count - 1];
+	int last = *fd_count - 1;
+
+	close(pfds[*i].fd);
+	free(clients[*i]);
+
+	pfds[*i] = pfds[last];
+	clients[*i] = clients[last];
+	clients[last] = NULL;
+
 	(*fd_count)--;
+	(*i)--;
 }
 
-static void add_to_pfds(struct pollfd **pfds, int newfd, int *fd_count,
-			int *fd_size)
+static void add_client(struct pollfd **pfds, struct client ***clients,
+		       int newfd, int *fd_count, int *fd_size)
 {
 	if (*fd_count == *fd_size) {
 		int new_size = *fd_size * 2;
-		struct pollfd *tmp = realloc(*pfds, sizeof(**pfds) * new_size);
-		if (!tmp) {
-			perror("realloc");
-			close(newfd);
-			return;
-		}
-		*pfds = tmp;
+
+		struct pollfd *p = realloc(*pfds, sizeof(**pfds) * new_size);
+		if (!p)
+			goto fail;
+		*pfds = p;
+
+		struct client **cl = realloc(*clients, sizeof(**clients) * new_size);
+		if (!cl)
+			goto fail;
+		*clients = cl;
+
+		for (int k = *fd_size; k < new_size; k++)
+			cl[k] = NULL;
 		*fd_size = new_size;
 	}
+
+	struct client *c = malloc(sizeof(*c));
+	if (!c)
+		goto fail;
+	client_init(c, newfd);
 
 	(*pfds)[*fd_count].fd = newfd;
 	(*pfds)[*fd_count].events = POLLIN;
 	(*pfds)[*fd_count].revents = 0;
+	(*clients)[*fd_count] = c;
 	(*fd_count)++;
+	return;
+
+fail:
+	perror("add_client");
+	close(newfd);
 }
 
-static void handle_new_connection(int listener, int *fd_size, int *fd_count,
-				  struct pollfd **pfds)
+static void handle_new_connection(int listener, struct pollfd **pfds,
+				  struct client ***clients, int *fd_count,
+				  int *fd_size)
 {
 	int new_fd = accept(listener, NULL, NULL);
 	if (new_fd == -1) {
 		perror("accept");
 		return;
 	}
-	add_to_pfds(pfds, new_fd, fd_count, fd_size);
+	add_client(pfds, clients, new_fd, fd_count, fd_size);
 }
 
-static void handle_client(struct pollfd *pfds, int *i, int *fd_count)
+static void handle_client(struct pollfd *pfds, struct client **clients, int *i,
+			  int *fd_count)
 {
-	char buff[MAX_SIZE];
-	int fd = pfds[*i].fd;
-	ssize_t n = recv(fd, buff, sizeof(buff) - 1, 0);
+	struct client *c = clients[*i];
 
-	if (n <= 0) {
-		close(fd);
-		del_from_pfds(pfds, *i, fd_count);
-		(*i)--;
+	if (c->in_len == sizeof(c->in)) {
+		drop_client(pfds, clients, i, fd_count);
 		return;
 	}
-	buff[n] = '\0';
 
-	for (char *p = buff; (p = strstr(p, "PING")) != NULL; p += 4) {
-		if (send(fd, PONG, sizeof(PONG) - 1, 0) == -1) {
-			perror("send");
-			break;
-		}
+	ssize_t n = recv(c->fd, c->in + c->in_len, sizeof(c->in) - c->in_len, 0);
+	if (n <= 0) {
+		drop_client(pfds, clients, i, fd_count);
+		return;
 	}
+	c->in_len += (size_t)n;
+
+	struct command cmd;
+	size_t used;
+	enum parse_status st;
+	while ((st = parse_command(c->in, c->in_len, &cmd, &used)) == PARSE_OK) {
+		dispatch(c, &cmd);
+		client_consume(c, used);
+	}
+
+	if (st == PARSE_ERROR) {
+		reply_error(c, "ERR Protocol error");
+		client_flush(c);
+		drop_client(pfds, clients, i, fd_count);
+		return;
+	}
+
+	if (client_flush(c) < 0)
+		drop_client(pfds, clients, i, fd_count);
 }
 
 int main(void)
 {
 	setbuf(stdout, NULL);
 	setbuf(stderr, NULL);
+
+	signal(SIGPIPE, SIG_IGN);
 
 	int opt = 1;
 	int fd_size = 5;
@@ -111,7 +159,8 @@ int main(void)
 	}
 
 	struct pollfd *pfds = malloc(sizeof(*pfds) * fd_size);
-	if (!pfds) {
+	struct client **clients = calloc(fd_size, sizeof(*clients));
+	if (!pfds || !clients) {
 		perror("malloc");
 		return 1;
 	}
@@ -131,14 +180,15 @@ int main(void)
 				continue;
 
 			if (pfds[i].fd == server_fd)
-				handle_new_connection(server_fd, &fd_size,
-						      &fd_count, &pfds);
+				handle_new_connection(server_fd, &pfds, &clients,
+						      &fd_count, &fd_size);
 			else
-				handle_client(pfds, &i, &fd_count);
+				handle_client(pfds, clients, &i, &fd_count);
 		}
 	}
 
 	free(pfds);
+	free(clients);
 	close(server_fd);
 	return 0;
 }
