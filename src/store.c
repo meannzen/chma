@@ -30,8 +30,45 @@ static char *dup_bytes(const char *p, size_t n)
 	return d;
 }
 
+static void list_free(struct list *l)
+{
+	if (!l)
+		return;
+	for (size_t i = 0; i < l->len; i++)
+		free(l->items[i]);
+	free(l->items);
+	free(l->lens);
+	free(l);
+}
+
+static int list_reserve(struct list *l, size_t need)
+{
+	size_t cap = l->cap ? l->cap : 4;
+	char **items;
+	size_t *lens;
+
+	if (l->cap >= need)
+		return 0;
+	while (cap < need)
+		cap *= 2;
+
+	items = realloc(l->items, cap * sizeof(*items));
+	if (!items)
+		return -1;
+	l->items = items;
+
+	lens = realloc(l->lens, cap * sizeof(*lens));
+	if (!lens)
+		return -1;
+	l->lens = lens;
+
+	l->cap = cap;
+	return 0;
+}
+
 static void free_entry(struct entry *e)
 {
+	list_free(e->list);
 	free(e->key);
 	free(e->val);
 	free(e);
@@ -131,6 +168,8 @@ int store_set(struct store *s, const char *key, size_t klen, const char *val,
 		if (!nv)
 			return -1;
 		free(e->val);
+		list_free(e->list);
+		e->list = NULL;
 		e->val = nv;
 		e->val_len = vlen;
 		e->expire_at_ms = expire_at_ms;
@@ -190,4 +229,69 @@ int store_del(struct store *s, const char *key, size_t klen)
 	free_entry(e);
 	s->count--;
 	return 1;
+}
+
+int store_rpush(struct store *s, const char *key, size_t klen,
+		const char *const *vals, const size_t *lens, size_t n,
+		size_t *out_len)
+{
+	struct entry *e;
+	struct list *l;
+	size_t base;
+	int created = 0;
+
+	store_get(s, key, klen);
+	e = *find_link(s, key, klen);
+
+	if (e && !e->list)
+		return STORE_WRONGTYPE;
+
+	if (!e) {
+		struct entry **link;
+
+		if (s->count + 1 > s->nbuckets * 3 / 4)
+			grow(s);
+		link = find_link(s, key, klen);
+
+		e = calloc(1, sizeof(*e));
+		if (!e)
+			return -1;
+		e->key = dup_bytes(key, klen);
+		e->list = calloc(1, sizeof(*e->list));
+		if (!e->key || !e->list) {
+			free_entry(e);
+			return -1;
+		}
+		e->key_len = klen;
+
+		*link = e;
+		s->count++;
+		created = 1;
+	}
+
+	l = e->list;
+	base = l->len;
+
+	if (list_reserve(l, base + n) < 0)
+		goto fail;
+
+	for (size_t i = 0; i < n; i++) {
+		char *copy = dup_bytes(vals[i], lens[i]);
+
+		if (!copy)
+			goto fail;
+		l->items[l->len] = copy;
+		l->lens[l->len] = lens[i];
+		l->len++;
+	}
+
+	*out_len = l->len;
+	return 0;
+
+fail:
+	while (l->len > base)
+		free(l->items[--l->len]);
+	if (created)
+		store_del(s, key, klen);
+	return -1;
 }

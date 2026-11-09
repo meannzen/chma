@@ -129,11 +129,29 @@ static void cmd_get(struct client *c, const struct command *cmd)
 
 	if (!e)
 		reply_null(c);
+	else if (e->list)
+		reply_error(c, "WRONGTYPE Operation against a key holding the "
+			       "wrong kind of value");
 	else
 		reply_bulk(c, e->val, e->val_len);
 }
 
 
-static void cmd_rpush(struct client *c , const struct command *cmd) {
-    reply_int(c, 1);
+static void cmd_rpush(struct client *c, const struct command *cmd)
+{
+	size_t new_len;
+	int rc = store_rpush(c->store, cmd->argv[1], cmd->argl[1],
+			     &cmd->argv[2], &cmd->argl[2],
+			     (size_t)(cmd->argc - 2), &new_len);
+
+	if (rc == STORE_WRONGTYPE) {
+		reply_error(c, "WRONGTYPE Operation against a key holding the "
+			       "wrong kind of value");
+		return;
+	}
+	if (rc < 0) {
+		reply_error(c, "ERR out of memory");
+		return;
+	}
+	reply_int(c, (int)new_len);
 }
