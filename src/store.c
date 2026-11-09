@@ -231,13 +231,53 @@ int store_del(struct store *s, const char *key, size_t klen)
 	return 1;
 }
 
-int store_rpush(struct store *s, const char *key, size_t klen,
-		const char *const *vals, const size_t *lens, size_t n,
-		size_t *out_len)
+static int list_push(struct list *l, const char *const *vals,
+		     const size_t *lens, size_t n, int front)
+{
+	char **copies;
+
+	if (n == 0)
+		return 0;
+	if (list_reserve(l, l->len + n) < 0)
+		return -1;
+
+	copies = calloc(n, sizeof(*copies));
+	if (!copies)
+		return -1;
+
+	for (size_t i = 0; i < n; i++) {
+		copies[i] = dup_bytes(vals[i], lens[i]);
+		if (!copies[i]) {
+			while (i > 0)
+				free(copies[--i]);
+			free(copies);
+			return -1;
+		}
+	}
+
+	if (front) {
+		memmove(l->items + n, l->items, l->len * sizeof(*l->items));
+		memmove(l->lens + n, l->lens, l->len * sizeof(*l->lens));
+		for (size_t i = 0; i < n; i++) {
+			l->items[i] = copies[n - 1 - i];
+			l->lens[i] = lens[n - 1 - i];
+		}
+	} else {
+		for (size_t i = 0; i < n; i++) {
+			l->items[l->len + i] = copies[i];
+			l->lens[l->len + i] = lens[i];
+		}
+	}
+	l->len += n;
+	free(copies);
+	return 0;
+}
+
+static int store_push(struct store *s, const char *key, size_t klen,
+		      const char *const *vals, const size_t *lens, size_t n,
+		      size_t *out_len, int front)
 {
 	struct entry *e;
-	struct list *l;
-	size_t base;
 	int created = 0;
 
 	store_get(s, key, klen);
@@ -269,29 +309,26 @@ int store_rpush(struct store *s, const char *key, size_t klen,
 		created = 1;
 	}
 
-	l = e->list;
-	base = l->len;
-
-	if (list_reserve(l, base + n) < 0)
-		goto fail;
-
-	for (size_t i = 0; i < n; i++) {
-		char *copy = dup_bytes(vals[i], lens[i]);
-
-		if (!copy)
-			goto fail;
-		l->items[l->len] = copy;
-		l->lens[l->len] = lens[i];
-		l->len++;
+	if (list_push(e->list, vals, lens, n, front) < 0) {
+		if (created)
+			store_del(s, key, klen);
+		return -1;
 	}
 
-	*out_len = l->len;
+	*out_len = e->list->len;
 	return 0;
+}
 
-fail:
-	while (l->len > base)
-		free(l->items[--l->len]);
-	if (created)
-		store_del(s, key, klen);
-	return -1;
+int store_rpush(struct store *s, const char *key, size_t klen,
+		const char *const *vals, const size_t *lens, size_t n,
+		size_t *out_len)
+{
+	return store_push(s, key, klen, vals, lens, n, out_len, 0);
+}
+
+int store_lpush(struct store *s, const char *key, size_t klen,
+		const char *const *vals, const size_t *lens, size_t n,
+		size_t *out_len)
+{
+	return store_push(s, key, klen, vals, lens, n, out_len, 1);
 }

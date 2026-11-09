@@ -15,6 +15,7 @@ static void cmd_echo(struct client *c, const struct command *cmd);
 static void cmd_set(struct client *c, const struct command *cmd);
 static void cmd_get(struct client *c, const struct command *cmd);
 static void cmd_rpush(struct client *c , const struct command *cmd);
+static void cmd_lpush(struct client *c, const struct command *cmd);
 static void cmd_lrange(struct client *c, const struct command *cmd);
 
 static const struct cmd_entry table[] = {
@@ -23,6 +24,7 @@ static const struct cmd_entry table[] = {
 	{ "SET", -3, cmd_set },
 	{ "GET", 2, cmd_get },
     {"RPUSH", -3, cmd_rpush},
+	{ "LPUSH", -3, cmd_lpush },
 	{ "LRANGE", 4, cmd_lrange },
 };
 
@@ -139,12 +141,16 @@ static void cmd_get(struct client *c, const struct command *cmd)
 }
 
 
-static void cmd_rpush(struct client *c, const struct command *cmd)
+typedef int (*push_fn)(struct store *s, const char *key, size_t klen,
+		       const char *const *vals, const size_t *lens, size_t n,
+		       size_t *out_len);
+
+static void push_and_reply(struct client *c, const struct command *cmd,
+			   push_fn push)
 {
 	size_t new_len;
-	int rc = store_rpush(c->store, cmd->argv[1], cmd->argl[1],
-			     &cmd->argv[2], &cmd->argl[2],
-			     (size_t)(cmd->argc - 2), &new_len);
+	int rc = push(c->store, cmd->argv[1], cmd->argl[1], &cmd->argv[2],
+		      &cmd->argl[2], (size_t)(cmd->argc - 2), &new_len);
 
 	if (rc == STORE_WRONGTYPE) {
 		reply_error(c, "WRONGTYPE Operation against a key holding the "
@@ -157,6 +163,17 @@ static void cmd_rpush(struct client *c, const struct command *cmd)
 	}
 	reply_int(c, (int)new_len);
 }
+
+static void cmd_rpush(struct client *c, const struct command *cmd)
+{
+	push_and_reply(c, cmd, store_rpush);
+}
+
+static void cmd_lpush(struct client *c, const struct command *cmd)
+{
+	push_and_reply(c, cmd, store_lpush);
+}
+
 static int parse_sll(const char *s, size_t len, long long *out)
 {
 	int neg = 0;

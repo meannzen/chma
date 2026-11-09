@@ -42,6 +42,10 @@ int store_rpush(struct store *s, const char *key, size_t klen,
 		const char *const *vals, const size_t *lens, size_t n,
 		size_t *out_len);
 
+int store_lpush(struct store *s, const char *key, size_t klen,
+		const char *const *vals, const size_t *lens, size_t n,
+		size_t *out_len);
+
 int store_del(struct store *s, const char *key, size_t klen);
 
 #endif
