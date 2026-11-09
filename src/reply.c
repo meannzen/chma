@@ -59,3 +59,9 @@ void reply_int(struct client *c , int num) {
 	int hlen = snprintf(hdr, sizeof(hdr), ":%d\r\n",num);
     out_append(c, hdr, (size_t)hlen);
 }
+
+
+void reply_array(struct client *c) {
+    // will implement in later stage
+    out_append(c, "*0\r\n", 4);
+}
