@@ -1,5 +1,7 @@
 #include "reply.h"
+#include "client.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -50,4 +52,10 @@ void reply_bulk(struct client *c, const char *s, size_t len)
 	out_append(c, hdr, (size_t)hlen);
 	out_append(c, s, len);
 	out_append(c, "\r\n", 2);
+}
+
+void reply_int(struct client *c , int num) {
+    char hdr[32];
+	int hlen = snprintf(hdr, sizeof(hdr), ":%d\r\n",num);
+    out_append(c, hdr, (size_t)hlen);
 }

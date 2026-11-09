@@ -14,12 +14,14 @@ static void cmd_ping(struct client *c, const struct command *cmd);
 static void cmd_echo(struct client *c, const struct command *cmd);
 static void cmd_set(struct client *c, const struct command *cmd);
 static void cmd_get(struct client *c, const struct command *cmd);
+static void cmd_rpush(struct client *c , const struct command *cmd);
 
 static const struct cmd_entry table[] = {
 	{ "PING", -1, cmd_ping },
 	{ "ECHO", 2, cmd_echo },
 	{ "SET", -3, cmd_set },
 	{ "GET", 2, cmd_get },
+    {"RPUSH", -3, cmd_rpush},
 };
 
 static int name_eq(const char *s, size_t len, const char *name)
@@ -129,4 +131,9 @@ static void cmd_get(struct client *c, const struct command *cmd)
 		reply_null(c);
 	else
 		reply_bulk(c, e->val, e->val_len);
+}
+
+
+static void cmd_rpush(struct client *c , const struct command *cmd) {
+    reply_int(c, 1);
 }
