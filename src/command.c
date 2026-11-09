@@ -15,7 +15,7 @@ static void cmd_echo(struct client *c, const struct command *cmd);
 static void cmd_set(struct client *c, const struct command *cmd);
 static void cmd_get(struct client *c, const struct command *cmd);
 static void cmd_rpush(struct client *c , const struct command *cmd);
-static void cmd_rrange(struct client *c , const struct command *cmd);
+static void cmd_lrange(struct client *c, const struct command *cmd);
 
 static const struct cmd_entry table[] = {
 	{ "PING", -1, cmd_ping },
@@ -23,7 +23,7 @@ static const struct cmd_entry table[] = {
 	{ "SET", -3, cmd_set },
 	{ "GET", 2, cmd_get },
     {"RPUSH", -3, cmd_rpush},
-    {"LRANGE", -3, cmd_rrange}
+	{ "LRANGE", 4, cmd_lrange },
 };
 
 static int name_eq(const char *s, size_t len, const char *name)
@@ -157,6 +157,62 @@ static void cmd_rpush(struct client *c, const struct command *cmd)
 	}
 	reply_int(c, (int)new_len);
 }
-static void cmd_rrange(struct client *c, const struct command *cmd) {
-    reply_array(c);
+static int parse_sll(const char *s, size_t len, long long *out)
+{
+	int neg = 0;
+	long long v;
+
+	if (len > 0 && s[0] == '-') {
+		neg = 1;
+		s++;
+		len--;
+	}
+	if (parse_ll(s, len, &v) < 0)
+		return -1;
+	*out = neg ? -v : v;
+	return 0;
+}
+
+static void cmd_lrange(struct client *c, const struct command *cmd)
+{
+	long long start;
+	long long stop;
+	long long len;
+	const struct entry *e;
+
+	if (parse_sll(cmd->argv[2], cmd->argl[2], &start) < 0 ||
+	    parse_sll(cmd->argv[3], cmd->argl[3], &stop) < 0) {
+		reply_error(c, "ERR value is not an integer or out of range");
+		return;
+	}
+
+	e = store_get(c->store, cmd->argv[1], cmd->argl[1]);
+	if (!e) {
+		reply_array(c, 0);
+		return;
+	}
+	if (!e->list) {
+		reply_error(c, "WRONGTYPE Operation against a key holding the "
+			       "wrong kind of value");
+		return;
+	}
+
+	len = (long long)e->list->len;
+	if (start < 0)
+		start += len;
+	if (start < 0)
+		start = 0;
+	if (stop < 0)
+		stop += len;
+	if (stop >= len)
+		stop = len - 1;
+
+	if (start > stop || start >= len) {
+		reply_array(c, 0);
+		return;
+	}
+
+	reply_array(c, (size_t)(stop - start + 1));
+	for (long long i = start; i <= stop; i++)
+		reply_bulk(c, e->list->items[i], e->list->lens[i]);
 }

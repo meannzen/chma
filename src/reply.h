@@ -10,5 +10,5 @@ void reply_error(struct client *c, const char *s);
 void reply_bulk(struct client *c, const char *s, size_t len);
 void reply_null(struct client *c);
 void reply_int(struct client *c , int num);
-void reply_array(struct client *c);
+void reply_array(struct client *c, size_t n);
 #endif
